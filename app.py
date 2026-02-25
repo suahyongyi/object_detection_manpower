@@ -11,16 +11,12 @@ from io import BytesIO
 # --- 1. CONFIGURATION & SETUP ---
 st.set_page_config(page_title="Dynamic Resourcing Prototype", layout="wide")
 
-# 🔗 GITHUB CONFIGURATION
-# We use the 'raw' URL to fetch images directly from your repo
+# GITHUB CONFIGURATION
 BASE_REPO_URL = "https://raw.githubusercontent.com/suahyongyi/object_detection_manpower/main/simulation_data"
-
-# ⚠️ IMPORTANT: Update this to match your actual total image count per folder
 TOTAL_IMAGES_IN_FOLDER = 10 
 
 @st.cache_resource
 def load_model():
-    # Load your custom trained model
     return YOLO('best.pt') 
 
 try:
@@ -34,7 +30,6 @@ if 'is_running' not in st.session_state:
     st.session_state.is_running = False
 if 'history_data' not in st.session_state:
     st.session_state.history_data = []
-# We store the frame_index in session state so it persists across reruns
 if 'frame_index' not in st.session_state:
     st.session_state.frame_index = 0
 
@@ -47,7 +42,6 @@ st.sidebar.divider()
 st.sidebar.header("📡 Stream Controls")
 col_start, col_stop = st.sidebar.columns(2)
 
-# BUTTON LOGIC: We use 'st.rerun()' to make the click instant
 if col_start.button("🟢 START"):
     st.session_state.is_running = True
     st.rerun()
@@ -58,10 +52,6 @@ if col_stop.button("🔴 STOP"):
 
 # --- 3. HELPER FUNCTIONS ---
 def fetch_image_from_github(location_folder, filename):
-    """
-    Fetches an image from your specific GitHub repo structure.
-    """
-    # Construct URL: .../simulation_data/loc1/frame_000.jpg
     url = f"{BASE_REPO_URL}/{location_folder}/{filename}"
     try:
         response = requests.get(url, timeout=3)
@@ -73,10 +63,7 @@ def fetch_image_from_github(location_folder, filename):
         return None
 
 def process_frame(image):
-    """Run inference and calculate metrics for a single image."""
     results = model.predict(image, conf=0.25, verbose=False, agnostic_nms=True)
-    
-    # Check your class IDs! Assuming 0=Customer, 1=Staff
     boxes = results[0].boxes
     staff_count = int((boxes.cls == 1).sum()) 
     cust_count = int((boxes.cls == 0).sum())
@@ -102,136 +89,153 @@ tab1, tab2 = st.tabs(["🎥 Surveillance", "📜 History"])
 
 # --- TAB 1: SURVEILLANCE ---
 with tab1:
+    # Top Header
     col_header, col_status = st.columns([3, 1])
     col_header.subheader("Live Operational View")
-    
-    # Status Indicators
     status_placeholder = col_status.empty()
     timestamp_placeholder = st.empty()
     
-    # Create 4 Rows for 4 Locations
-    loc_containers = []
-    for i in range(4):
-        with st.container():
+    # --- LAYOUT FIX: 2x2 GRID ---
+    # We create a 2x2 grid to fit 4 locations on one screen without scrolling.
+    # Row 1: Location 1 & 2
+    # Row 2: Location 3 & 4
+    
+    # Define containers for the 4 locations
+    loc_placeholders = [] 
+    
+    # Create Row 1
+    row1_col1, row1_col2 = st.columns(2)
+    
+    # Create Row 2
+    row2_col1, row2_col2 = st.columns(2)
+    
+    # Map locations to columns: Loc1->R1C1, Loc2->R1C2, Loc3->R2C1, Loc4->R2C2
+    grid_columns = [row1_col1, row1_col2, row2_col1, row2_col2]
+    
+    for i, col in enumerate(grid_columns):
+        with col:
             st.markdown(f"**Location {i+1}**")
-            c1, c2 = st.columns([2, 1]) 
-            loc_containers.append((c1, c2)) # Store empty columns to fill later
+            # Inner columns: Left for Image, Right for Metrics
+            # We make the image column narrower to force a smaller image
+            c_img, c_txt = st.columns([1, 1.2]) 
+            
+            # CRITICAL: Create EMPTY placeholders. 
+            # This ensures we OVERWRITE data, not append.
+            ph_img = c_img.empty()
+            ph_txt = c_txt.empty()
+            
+            loc_placeholders.append((ph_img, ph_txt))
             st.divider()
-
-    # --- THE RESPONSIVE LOOP ---
-    if st.session_state.is_running:
-        
-        # We use a placeholder for the countdown bar
-        progress_bar = st.empty()
-        
-        # State variables for the loop
-        UPDATE_INTERVAL = 30  # Seconds
-        next_update_time = time.time() # Start immediately
-        
-        # MAIN APP LOOP
-        while st.session_state.is_running:
-            
-            # 1. CHECK TIMER: Is it time to run a batch?
-            current_time = time.time()
-            time_left = next_update_time - current_time
-            
-            if time_left <= 0:
-                # --- ACTION: RUN BATCH PROCESSING ---
-                status_placeholder.info("⚡ PROCESSING BATCH...")
-                progress_bar.progress(0, text="Fetching images from GitHub...")
-                
-                # A. Update Timestamp
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                timestamp_placeholder.markdown(f"<h3 style='text-align: right;'>🕒 {now_str}</h3>", unsafe_allow_html=True)
-                
-                # B. Generate Filename (Cycling 0 to TOTAL_IMAGES)
-                # Assumes filename format: frame_000.jpg, frame_001.jpg
-                idx = st.session_state.frame_index % TOTAL_IMAGES_IN_FOLDER
-                filename = f"frame_{idx:03d}.jpg" 
-                
-                # C. Fetch & Process for all 4 Locations
-                locations = ["loc1", "loc2", "loc3", "loc4"]
-                batch_images = []
-                
-                for loc in locations:
-                    img = fetch_image_from_github(loc, filename)
-                    batch_images.append(img)
-                
-                # Only proceed if we successfully fetched at least one image
-                # (We use 'all' to be strict, or 'any' to be lenient)
-                if all(batch_images):
-                    for i, img in enumerate(batch_images):
-                        loc_name = f"Location {i+1}"
-                        col_img, col_metrics = loc_containers[i]
-                        
-                        plotted_img, staff, cust, total, ratio = process_frame(img)
-                        
-                        # Display Image
-                        col_img.image(plotted_img[..., ::-1], channels="RGB", use_container_width=True)
-                        
-                        # Display Metrics
-                        staff_alert = "🚨" if staff < min_staff_threshold else ""
-                        ratio_alert = "🚨" if (ratio == float('inf') or ratio > cust_per_staff_threshold) else ""
-                        ratio_display = "∞" if ratio == float('inf') else str(ratio)
-                        
-                        metrics_html = f"""
-                        <div style="font-size: 1.1rem; line-height: 1.6;">
-                            <b>Total:</b> {total}<br>
-                            <b>Staff:</b> {staff} <span style="color:red">{staff_alert}</span><br>
-                            <b>Customer:</b> {cust}<br>
-                            <b>Cust/Staff:</b> {ratio_display} <span style="color:red">{ratio_alert}</span>
-                        </div>
-                        """
-                        col_metrics.markdown(metrics_html, unsafe_allow_html=True)
-                        
-                        # Log History
-                        alert_msg = generate_alert_status(staff, ratio, min_staff_threshold, cust_per_staff_threshold)
-                        new_record = {
-                            "DateTime": now_str,
-                            "Location": loc_name,
-                            "Total": total,
-                            "Staff": staff,
-                            "Customer": cust,
-                            "Ratio": ratio_display,
-                            "Alerts": alert_msg
-                        }
-                        st.session_state.history_data.insert(0, new_record)
-                    
-                    status_placeholder.success(f"✅ BATCH {idx} COMPLETE")
-                
-                else:
-                    status_placeholder.error(f"❌ Failed to fetch batch: {filename}")
-                
-                # D. Advance Counter & Reset Timer
-                st.session_state.frame_index += 1
-                next_update_time = time.time() + UPDATE_INTERVAL
-                
-            else:
-                # --- IDLE STATE: UPDATE COUNTDOWN ---
-                # Calculate percentage for progress bar (0% at 30s, 100% at 0s)
-                percent_complete = 1 - (time_left / UPDATE_INTERVAL)
-                percent_complete = max(0.0, min(1.0, percent_complete)) # Clamp between 0 and 1
-                
-                progress_bar.progress(percent_complete, text=f"Next scan in {int(time_left)} seconds...")
-                
-                # IMPORTANT: Small sleep to prevent CPU burning
-                # This keeps the loop running but allows Streamlit to catch "Stop" clicks
-                time.sleep(0.1) 
-
-    else:
-        status_placeholder.warning("🛑 SYSTEM OFFLINE")
 
 # --- TAB 2: HISTORY ---
 with tab2:
     st.subheader("Event Log")
+    # CRITICAL: Create a placeholder here so we can update it from inside the loop
+    history_table_placeholder = st.empty() 
+
+# --- 5. THE MAIN LOOP ---
+if st.session_state.is_running:
+    
+    progress_bar = tab1.empty() # Put progress bar on Tab 1
+    UPDATE_INTERVAL = 30 
+    next_update_time = time.time()
+    
+    while st.session_state.is_running:
+        
+        current_time = time.time()
+        time_left = next_update_time - current_time
+        
+        if time_left <= 0:
+            # --- PROCESS BATCH ---
+            status_placeholder.info("⚡ PROCESSING...")
+            progress_bar.progress(0, text="Fetching...")
+            
+            # 1. Update Time
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp_placeholder.markdown(f"<h5 style='text-align: right; color:gray'>{now_str}</h5>", unsafe_allow_html=True)
+            
+            # 2. Fetch Images
+            idx = st.session_state.frame_index % TOTAL_IMAGES_IN_FOLDER
+            filename = f"frame_{idx:03d}.jpg" 
+            
+            locations = ["loc1", "loc2", "loc3", "loc4"]
+            batch_images = []
+            for loc in locations:
+                batch_images.append(fetch_image_from_github(loc, filename))
+            
+            if all(batch_images):
+                for i, img in enumerate(batch_images):
+                    # Get the placeholders we created earlier
+                    ph_img, ph_txt = loc_placeholders[i]
+                    
+                    # Predict
+                    plotted_img, staff, cust, total, ratio = process_frame(img)
+                    
+                    # Alerts
+                    staff_alert = "🚨" if staff < min_staff_threshold else ""
+                    ratio_alert = "🚨" if (ratio == float('inf') or ratio > cust_per_staff_threshold) else ""
+                    ratio_display = "∞" if ratio == float('inf') else str(ratio)
+                    
+                    # UPDATE IMAGE (Fix 1: Resize)
+                    # width=250 makes it small enough to fit nicely
+                    ph_img.image(plotted_img[..., ::-1], channels="RGB", width=250)
+                    
+                    # UPDATE METRICS (Fix 2: Overwrite)
+                    # We write into the placeholder 'ph_txt', replacing old text
+                    metrics_html = f"""
+                    <div style="font-size: 0.9rem; line-height: 1.4;">
+                        <b>Total:</b> {total}<br>
+                        <b>Staff:</b> {staff} <span style="color:red">{staff_alert}</span><br>
+                        <b>Customer:</b> {cust}<br>
+                        <b>Ratio:</b> {ratio_display} <span style="color:red">{ratio_alert}</span>
+                    </div>
+                    """
+                    ph_txt.markdown(metrics_html, unsafe_allow_html=True)
+                    
+                    # UPDATE HISTORY DATA
+                    loc_name = f"Location {i+1}"
+                    alert_msg = generate_alert_status(staff, ratio, min_staff_threshold, cust_per_staff_threshold)
+                    new_record = {
+                        "DateTime": now_str,
+                        "Location": loc_name,
+                        "Total": total,
+                        "Staff": staff,
+                        "Customer": cust,
+                        "Ratio": ratio_display,
+                        "Alerts": alert_msg
+                    }
+                    st.session_state.history_data.insert(0, new_record)
+
+                # UPDATE HISTORY TABLE (Fix 3: Live Update)
+                # We update the table placeholder immediately after the batch is done
+                with history_table_placeholder.container():
+                     st.dataframe(
+                        pd.DataFrame(st.session_state.history_data), 
+                        use_container_width=True,
+                        height=400, # Fixed height to keep it tidy
+                        column_config={"Alerts": st.column_config.TextColumn("Alerts")}
+                    )
+
+                status_placeholder.success(f"✅ ACTIVE")
+                st.session_state.frame_index += 1
+                next_update_time = time.time() + UPDATE_INTERVAL
+            
+            else:
+                status_placeholder.error("❌ Fetch Error")
+                time.sleep(5) # Wait before retry
+
+        else:
+            # --- IDLE COUNTDOWN ---
+            percent = 1 - (time_left / UPDATE_INTERVAL)
+            percent = max(0.0, min(1.0, percent))
+            progress_bar.progress(percent, text=f"Next scan in {int(time_left)}s")
+            time.sleep(0.1)
+
+else:
+    status_placeholder.warning("🛑 OFFLINE")
+    # Show history if available even when stopped
     if st.session_state.history_data:
-        df_history = pd.DataFrame(st.session_state.history_data)
-        st.dataframe(
-            df_history, 
-            use_container_width=True,
-            column_config={
-                "Alerts": st.column_config.TextColumn("Alerts", help="Triggered threshold violations")
-            }
+        history_table_placeholder.dataframe(
+            pd.DataFrame(st.session_state.history_data), 
+            use_container_width=True
         )
-    else:
-        st.info("No data yet. Start the stream to collect logs.")
