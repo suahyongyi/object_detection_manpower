@@ -95,48 +95,36 @@ with tab1:
     status_placeholder = col_status.empty()
     timestamp_placeholder = st.empty()
     
-    # --- LAYOUT FIX: 2x2 GRID ---
-    # We create a 2x2 grid to fit 4 locations on one screen without scrolling.
-    # Row 1: Location 1 & 2
-    # Row 2: Location 3 & 4
-    
-    # Define containers for the 4 locations
-    loc_placeholders = [] 
-    
-    # Create Row 1
+    # --- LAYOUT: 2x2 GRID ---
     row1_col1, row1_col2 = st.columns(2)
-    
-    # Create Row 2
     row2_col1, row2_col2 = st.columns(2)
     
-    # Map locations to columns: Loc1->R1C1, Loc2->R1C2, Loc3->R2C1, Loc4->R2C2
+    # Store placeholders for (Image, Text) in a list
+    loc_placeholders = [] 
     grid_columns = [row1_col1, row1_col2, row2_col1, row2_col2]
     
     for i, col in enumerate(grid_columns):
         with col:
             st.markdown(f"**Location {i+1}**")
             # Inner columns: Left for Image, Right for Metrics
-            # We make the image column narrower to force a smaller image
             c_img, c_txt = st.columns([1, 1.2]) 
-            
-            # CRITICAL: Create EMPTY placeholders. 
-            # This ensures we OVERWRITE data, not append.
             ph_img = c_img.empty()
             ph_txt = c_txt.empty()
-            
             loc_placeholders.append((ph_img, ph_txt))
             st.divider()
+
+    # Progress Bar Placeholder
+    progress_bar = st.empty()
 
 # --- TAB 2: HISTORY ---
 with tab2:
     st.subheader("Event Log")
-    # CRITICAL: Create a placeholder here so we can update it from inside the loop
-    history_table_placeholder = st.empty() 
+    # History Table Placeholder
+    history_table_placeholder = st.empty()
 
 # --- 5. THE MAIN LOOP ---
 if st.session_state.is_running:
     
-    progress_bar = tab1.empty() # Put progress bar on Tab 1
     UPDATE_INTERVAL = 30 
     next_update_time = time.time()
     
@@ -154,8 +142,9 @@ if st.session_state.is_running:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             timestamp_placeholder.markdown(f"<h5 style='text-align: right; color:gray'>{now_str}</h5>", unsafe_allow_html=True)
             
-            # 2. Fetch Images
-            idx = st.session_state.frame_index % TOTAL_IMAGES_IN_FOLDER
+            # 2. Fetch Images (FIXED: Starts at 1)
+            # Modulo gives 0..9 -> Add 1 to get 1..10
+            idx = (st.session_state.frame_index % TOTAL_IMAGES_IN_FOLDER) + 1
             filename = f"frame_{idx:03d}.jpg" 
             
             locations = ["loc1", "loc2", "loc3", "loc4"]
@@ -164,8 +153,9 @@ if st.session_state.is_running:
                 batch_images.append(fetch_image_from_github(loc, filename))
             
             if all(batch_images):
+                new_records_batch = []
+                
                 for i, img in enumerate(batch_images):
-                    # Get the placeholders we created earlier
                     ph_img, ph_txt = loc_placeholders[i]
                     
                     # Predict
@@ -176,26 +166,24 @@ if st.session_state.is_running:
                     ratio_alert = "🚨" if (ratio == float('inf') or ratio > cust_per_staff_threshold) else ""
                     ratio_display = "∞" if ratio == float('inf') else str(ratio)
                     
-                    # UPDATE IMAGE (Fix 1: Resize)
-                    # width=250 makes it small enough to fit nicely
+                    # UPDATE IMAGE (Small width for compact view)
                     ph_img.image(plotted_img[..., ::-1], channels="RGB", width=250)
                     
-                    # UPDATE METRICS (Fix 2: Overwrite)
-                    # We write into the placeholder 'ph_txt', replacing old text
+                    # UPDATE METRICS (Overwrite text)
                     metrics_html = f"""
                     <div style="font-size: 0.9rem; line-height: 1.4;">
                         <b>Total:</b> {total}<br>
                         <b>Staff:</b> {staff} <span style="color:red">{staff_alert}</span><br>
-                        <b>Customer:</b> {cust}<br>
+                        <b>Cust:</b> {cust}<br>
                         <b>Ratio:</b> {ratio_display} <span style="color:red">{ratio_alert}</span>
                     </div>
                     """
                     ph_txt.markdown(metrics_html, unsafe_allow_html=True)
                     
-                    # UPDATE HISTORY DATA
+                    # Collect History Data
                     loc_name = f"Location {i+1}"
                     alert_msg = generate_alert_status(staff, ratio, min_staff_threshold, cust_per_staff_threshold)
-                    new_record = {
+                    new_records_batch.append({
                         "DateTime": now_str,
                         "Location": loc_name,
                         "Total": total,
@@ -203,33 +191,37 @@ if st.session_state.is_running:
                         "Customer": cust,
                         "Ratio": ratio_display,
                         "Alerts": alert_msg
-                    }
-                    st.session_state.history_data.insert(0, new_record)
+                    })
 
-                # UPDATE HISTORY TABLE (Fix 3: Live Update)
-                # We update the table placeholder immediately after the batch is done
-                with history_table_placeholder.container():
-                     st.dataframe(
-                        pd.DataFrame(st.session_state.history_data), 
-                        use_container_width=True,
-                        height=400, # Fixed height to keep it tidy
-                        column_config={"Alerts": st.column_config.TextColumn("Alerts")}
-                    )
+                # Insert batch into history (reverse order so Loc 1 is top)
+                for record in reversed(new_records_batch):
+                    st.session_state.history_data.insert(0, record)
 
-                status_placeholder.success(f"✅ ACTIVE")
+                # Update History Table Immediately
+                history_table_placeholder.dataframe(
+                    pd.DataFrame(st.session_state.history_data), 
+                    use_container_width=True,
+                    height=400,
+                    column_config={"Alerts": st.column_config.TextColumn("Alerts")}
+                )
+
+                status_placeholder.success(f"✅ ACTIVE (Batch {idx})")
                 st.session_state.frame_index += 1
                 next_update_time = time.time() + UPDATE_INTERVAL
             
             else:
-                status_placeholder.error("❌ Fetch Error")
+                status_placeholder.error(f"❌ Failed to fetch: {filename}")
                 time.sleep(5) # Wait before retry
 
         else:
             # --- IDLE COUNTDOWN ---
+            # Small sleep to prevent CPU burning
+            time.sleep(0.1)
+            
+            # Update Progress Bar
             percent = 1 - (time_left / UPDATE_INTERVAL)
             percent = max(0.0, min(1.0, percent))
             progress_bar.progress(percent, text=f"Next scan in {int(time_left)}s")
-            time.sleep(0.1)
 
 else:
     status_placeholder.warning("🛑 OFFLINE")
@@ -237,5 +229,6 @@ else:
     if st.session_state.history_data:
         history_table_placeholder.dataframe(
             pd.DataFrame(st.session_state.history_data), 
-            use_container_width=True
+            use_container_width=True,
+            column_config={"Alerts": st.column_config.TextColumn("Alerts")}
         )
